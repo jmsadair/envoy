@@ -129,6 +129,11 @@ public:
     ENVOY_LOG(critical, "Caught {}, suspect faulting address {}", signame, addr);
   }
 
+  void loadRaw(void* const* frames, int depth) {
+    stack_depth_ = depth;
+    std::memcpy(stack_trace_, frames, depth * sizeof(void*));
+  }
+
   void printTrace(std::ostream& os) {
     visitTrace([&](int index, const char* symbol, void* address) {
       if (symbol != nullptr) {
@@ -163,7 +168,10 @@ private:
     }
   }
 
+public:
   static constexpr int MaxStackDepth = 64;
+
+private:
   void* stack_trace_[MaxStackDepth];
   int stack_depth_{0};
 };
