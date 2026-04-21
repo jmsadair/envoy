@@ -1,6 +1,6 @@
 #include "source/extensions/watchdog/backtrace_action/backtrace_action.h"
 
-#include <fcntl.h>
+#include <sys/syscall.h>
 
 #include "envoy/thread/thread.h"
 
@@ -8,7 +8,6 @@
 #include "source/common/signal/non_fatal_signal_action.h"
 #include "source/common/signal/non_fatal_signal_handler.h"
 #include "source/common/thread/signal_thread.h"
-#include "source/server/backtrace.h"
 
 #include "absl/debugging/stacktrace.h"
 
@@ -17,59 +16,46 @@ namespace Extensions {
 namespace Watchdog {
 namespace BacktraceAction {
 
-namespace {
-struct RawTrace {
-  static constexpr int MaxDepth = BackwardsTrace::MaxStackDepth;
-  void* frames[MaxDepth];
-  int depth{0};
-};
-} // namespace
-
 BacktraceAction::BacktraceAction(
     envoy::extensions::watchdog::backtrace_action::v3::BacktraceActionConfig& config,
     Server::Configuration::GuardDogActionFactoryContext& context)
     : cooldown_duration_(
           std::chrono::seconds(PROTOBUF_GET_SECONDS_OR_DEFAULT(config, cooldown_duration, 10))),
       handler_registered_(NonFatalSignalHandler::registerNonFatalSignalHandler(*this)) {
-  int fds[2];
-  RELEASE_ASSERT(pipe(fds) == 0, "");
-  pipe_read_fd_ = fds[0];
-  pipe_write_fd_ = fds[1];
-  RELEASE_ASSERT(fcntl(pipe_read_fd_, F_SETFL, O_NONBLOCK) == 0, "");
-  RELEASE_ASSERT(fcntl(pipe_write_fd_, F_SETFL, O_NONBLOCK) == 0, "");
 
-  pipe_event_ = context.dispatcher_.createFileEvent(
-      pipe_read_fd_,
-      [this](uint32_t) -> absl::Status {
-        RawTrace trace;
-        while (read(pipe_read_fd_, &trace, sizeof(trace)) == sizeof(trace)) {
-          BackwardsTrace tracer;
-          tracer.loadRaw(trace.frames, trace.depth);
-          tracer.logTrace();
-        }
-        return absl::OkStatus();
-      },
-      Event::PlatformDefaultTriggerType, Event::FileReadyType::Read);
+  for (int i = 0; i < MaxSlots; ++i) {
+    slots_[i].timer = context.dispatcher_.createTimer([this, i]() {
+      auto& slot = slots_[i];
+      if (slot.ready.load(std::memory_order_acquire)) {
+        BackwardsTrace tracer;
+        tracer.loadRaw(slot.trace.frames, slot.trace.depth);
+        tracer.logTrace();
+      }
+      slot.tid.store(0, std::memory_order_release);
+    });
+  }
 }
 
 BacktraceAction::~BacktraceAction() {
   if (handler_registered_) {
     NonFatalSignalHandler::removeNonFatalSignalHandler(*this);
   }
-  close(pipe_write_fd_);
-  pipe_event_.reset();
-  close(pipe_read_fd_);
 }
 
 void BacktraceAction::onNonFatalSignal(int /*sig*/, siginfo_t* /*info*/, void* context) const {
-  RawTrace trace;
-  if (context != nullptr) {
-    trace.depth =
-        absl::GetStackTraceWithContext(trace.frames, RawTrace::MaxDepth, 1, context, nullptr);
-  } else {
-    trace.depth = absl::GetStackTrace(trace.frames, RawTrace::MaxDepth, 1);
+  const pid_t mytid = static_cast<pid_t>(syscall(SYS_gettid));
+  for (auto& slot : slots_) {
+    if (slot.tid.load(std::memory_order_acquire) == mytid) {
+      auto& t = slot.trace;
+      if (context != nullptr) {
+        t.depth = absl::GetStackTraceWithContext(t.frames, MaxStackDepth, 1, context, nullptr);
+      } else {
+        t.depth = absl::GetStackTrace(t.frames, MaxStackDepth, 1);
+      }
+      slot.ready.store(true, std::memory_order_release);
+      return;
+    }
   }
-  write(pipe_write_fd_, &trace, sizeof(trace));
 }
 
 void BacktraceAction::run(
@@ -89,14 +75,40 @@ void BacktraceAction::run(
     return;
   }
 
-  for (const auto& pair : thread_last_checkin_pairs) {
-    if (auto it = tid_to_last_backtrace_.find(pair.first); it != tid_to_last_backtrace_.end()) {
+  for (const auto& [tid, ltt] : thread_last_checkin_pairs) {
+    // Apply cooldown per thread.
+    if (auto it = tid_to_last_backtrace_.find(tid); it != tid_to_last_backtrace_.end()) {
       if (std::chrono::duration_cast<std::chrono::seconds>(now - it->second) < cooldown_duration_) {
         continue;
       }
     }
-    Thread::signalThread(pair.first, SIGUSR2);
-    tid_to_last_backtrace_[pair.first] = now;
+
+    const pid_t raw_tid = static_cast<pid_t>(tid.getId());
+
+    // Skip if already in-flight for this TID.
+    bool pending = false;
+    for (const auto& slot : slots_) {
+      if (slot.tid.load(std::memory_order_acquire) == raw_tid) {
+        pending = true;
+        break;
+      }
+    }
+    if (pending) {
+      continue;
+    }
+
+    // Claim a free slot.
+    for (auto& slot : slots_) {
+      pid_t expected = 0;
+      if (slot.tid.compare_exchange_strong(expected, raw_tid, std::memory_order_release,
+                                           std::memory_order_relaxed)) {
+        slot.ready.store(false, std::memory_order_relaxed);
+        Thread::signalThread(tid, SIGUSR2);
+        slot.timer->enableTimer(std::chrono::milliseconds(100));
+        tid_to_last_backtrace_[tid] = now;
+        break;
+      }
+    }
   }
 }
 

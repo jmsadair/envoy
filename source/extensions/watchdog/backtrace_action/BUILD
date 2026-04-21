@@ -14,8 +14,8 @@ envoy_cc_library(
     srcs = ["backtrace_action.cc"],
     hdrs = ["backtrace_action.h"],
     deps = [
-        "//envoy/api:api_interface",
         "//envoy/common:time_interface",
+        "//envoy/event:timer_interface",
         "//envoy/server:guarddog_config_interface",
         "//envoy/thread:thread_interface",
         "//source/common/protobuf:utility_lib",
@@ -23,8 +23,7 @@ envoy_cc_library(
         "//source/common/signal:non_fatal_sigaction_lib",
         "//source/common/signal:non_fatal_signal_handler_lib",
         "//source/server:backtrace_lib",
-        "//source/common/stats:symbol_table_lib",
-        "@abseil-cpp//absl/types:optional",
+        "@abseil-cpp//absl/debugging:stacktrace",
         "@envoy_api//envoy/extensions/watchdog/backtrace_action/v3:pkg_cc_proto",
     ],
 )

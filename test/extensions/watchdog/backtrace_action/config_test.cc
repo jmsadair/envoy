@@ -11,6 +11,9 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
+using testing::Invoke;
+using testing::NiceMock;
+
 namespace Envoy {
 namespace Extensions {
 namespace Watchdog {
@@ -44,8 +47,11 @@ TEST(BacktraceActionFactoryTest, CanCreateAction) {
 
   Stats::TestUtil::TestStore stats;
   Event::MockDispatcher dispatcher;
-  EXPECT_CALL(dispatcher, createFileEvent_(testing::_, testing::_, testing::_, testing::_))
-      .WillOnce(testing::Return(new Event::MockFileEvent()));
+  EXPECT_CALL(dispatcher, createTimer_(testing::_))
+      .Times(16)
+      .WillRepeatedly(Invoke([](Event::TimerCb) {
+        return new NiceMock<Event::MockTimer>();
+      }));
   Api::ApiPtr api = Api::createApiForTest(stats);
   Server::Configuration::GuardDogActionFactoryContext context{*api, dispatcher, *stats.rootScope(),
                                                               "test"};

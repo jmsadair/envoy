@@ -1,4 +1,3 @@
-#include <algorithm>
 #include <atomic>
 #include <memory>
 #include <vector>
@@ -12,13 +11,10 @@
 
 #include "source/common/signal/non_fatal_signal_action.h"
 #include "source/extensions/watchdog/backtrace_action/backtrace_action.h"
-#include "source/extensions/watchdog/backtrace_action/config.h"
 #include "source/server/backtrace.h"
 
 #include "test/common/stats/stat_test_utility.h"
 #include "test/test_common/logging.h"
-#include "test/test_common/simulated_time_system.h"
-#include "test/test_common/test_time.h"
 #include "test/test_common/utility.h"
 
 #include "absl/synchronization/notification.h"
@@ -33,13 +29,10 @@ namespace {
 class BacktraceActionTest : public testing::Test {
 protected:
   BacktraceActionTest()
-      : time_system_(std::make_unique<Event::SimulatedTimeSystem>()),
-        api_(Api::createApiForTest(stats_, *time_system_)),
-        dispatcher_(api_->allocateDispatcher("test")),
+      : api_(Api::createApiForTest(stats_)), dispatcher_(api_->allocateDispatcher("test")),
         context_({*api_, *dispatcher_, *stats_.rootScope(), "test"}) {}
 
   Stats::TestUtil::TestStore stats_;
-  std::unique_ptr<Event::TestTimeSystem> time_system_;
   Api::ApiPtr api_;
   Event::DispatcherPtr dispatcher_;
   Server::Configuration::GuardDogActionFactoryContext context_;
@@ -54,7 +47,7 @@ TEST_F(BacktraceActionTest, NoBacktracesLogged) {
   const std::vector<std::pair<Thread::ThreadId, MonotonicTime>> tid_ltt_pairs = {
       {Thread::ThreadId(10), now}};
 
-  EXPECT_LOG_NOT_CONTAINS("critical", "Backtrace (use tools",
+  EXPECT_LOG_NOT_CONTAINS("critical", "Envoy version:",
                           action_->run(envoy::config::bootstrap::v3::Watchdog::WatchdogAction::MISS,
                                        tid_ltt_pairs, now));
 }
@@ -85,12 +78,14 @@ TEST_F(BacktraceActionTest, SingleBacktraceLogged) {
   absl::Notification logged;
   LogLevelSetter save_levels(spdlog::level::trace);
   LogExpectation expectation(GetLogSink(), [&](Logger::Logger::Levels, const std::string& msg) {
-    if (msg.find("Backtrace (use tools") != std::string::npos) {
+    if (msg.find("Envoy version:") != std::string::npos) {
       logged.Notify();
     }
   });
 
-  action_->run(envoy::config::bootstrap::v3::Watchdog::WatchdogAction::MISS, tid_ltt_pairs, now);
+  dispatcher_->post([&]() {
+    action_->run(envoy::config::bootstrap::v3::Watchdog::WatchdogAction::MISS, tid_ltt_pairs, now);
+  });
 
   EXPECT_TRUE(logged.WaitForNotificationWithTimeout(absl::Seconds(5)));
 
@@ -135,14 +130,16 @@ TEST_F(BacktraceActionTest, MultipleBacktracesLogged) {
   absl::Notification all_logged;
   LogLevelSetter save_levels(spdlog::level::trace);
   LogExpectation expectation(GetLogSink(), [&](Logger::Logger::Levels, const std::string& msg) {
-    if (msg.find("Backtrace (use tools") != std::string::npos) {
+    if (msg.find("Envoy version:") != std::string::npos) {
       if (++count == 2) {
         all_logged.Notify();
       }
     }
   });
 
-  action_->run(envoy::config::bootstrap::v3::Watchdog::WatchdogAction::MISS, tid_ltt_pairs, now);
+  dispatcher_->post([&]() {
+    action_->run(envoy::config::bootstrap::v3::Watchdog::WatchdogAction::MISS, tid_ltt_pairs, now);
+  });
 
   EXPECT_TRUE(all_logged.WaitForNotificationWithTimeout(absl::Seconds(5)));
 
