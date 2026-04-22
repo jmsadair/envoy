@@ -3,13 +3,13 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <csignal>
 
 #include "envoy/event/timer.h"
 #include "envoy/extensions/watchdog/backtrace_action/v3/backtrace_action.pb.h"
 #include "envoy/server/guarddog_config.h"
 #include "envoy/thread/thread.h"
 
-#include "source/common/signal/non_fatal_signal_handler.h"
 #include "source/server/backtrace.h"
 
 namespace Envoy {
@@ -18,10 +18,9 @@ namespace Watchdog {
 namespace BacktraceAction {
 
 /**
- * A GuardDogAction that will log backtraces of stuck threads.
+ * A GuardDogAction that logs backtraces of stuck threads.
  */
-class BacktraceAction : public Server::Configuration::GuardDogAction,
-                        public NonFatalSignalHandlerInterface {
+class BacktraceAction : public Server::Configuration::GuardDogAction {
 public:
   BacktraceAction(envoy::extensions::watchdog::backtrace_action::v3::BacktraceActionConfig& config,
                   Server::Configuration::GuardDogActionFactoryContext& context);
@@ -30,8 +29,6 @@ public:
   void run(envoy::config::bootstrap::v3::Watchdog::WatchdogAction::WatchdogEvent event,
            const std::vector<std::pair<Thread::ThreadId, MonotonicTime>>& thread_last_checkin_pairs,
            MonotonicTime now) override;
-
-  void onNonFatalSignal(int sig, siginfo_t* info, void* context) const override;
 
 private:
   static constexpr int MaxSlots = 16;
@@ -42,17 +39,29 @@ private:
     int depth{0};
   };
 
-  struct Slot {
+  struct SignalSlot {
     std::atomic<pid_t> tid{0};
     std::atomic<bool> ready{false};
     RawTrace trace{};
-    Event::TimerPtr timer;
   };
 
+  static void onNonFatalSignal(int sig, siginfo_t* info, void* context);
+
+  // Minimum amount of time between backtraces for a given thread.
   std::chrono::seconds cooldown_duration_;
+
+  // Guards against duplicate registration of the signal handler onNonFatalSignal.
+  static bool signal_handler_registered_;
+
+  // Corresponding timer for each SignalSlot.
+  std::array<Event::TimerPtr, MaxSlots> timers_;
+
+  // Contains the backtrace state for up to MaxSlots threads at a time.
+  // This must be static so that it is not destroyed while the signal handler is using it.
+  static std::array<SignalSlot, MaxSlots> signal_slots_;
+
+  // Maps TID to last time a backtrace was taken for it.
   absl::flat_hash_map<Thread::ThreadId, MonotonicTime> tid_to_last_backtrace_;
-  bool handler_registered_;
-  mutable std::array<Slot, MaxSlots> slots_;
 };
 
 using BacktraceActionPtr = std::unique_ptr<BacktraceAction>;

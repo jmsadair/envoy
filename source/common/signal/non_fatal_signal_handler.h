@@ -2,36 +2,31 @@
 
 #include <csignal>
 
-#include "envoy/common/pure.h"
-
 namespace Envoy {
 
-// A simple class which allows registering functions to be called when Envoy
-// receives a non-fatal signal, documented in non_fatal_signal_action.h.
-class NonFatalSignalHandlerInterface {
-public:
-  virtual ~NonFatalSignalHandlerInterface() = default;
-  // Called when Envoy receives a non-fatal signal. Must be async-signal-safe.
-  virtual void onNonFatalSignal(int sig, siginfo_t* info, void* context) const PURE;
-};
+// Function pointer type for non-fatal signal handlers. Implementations must
+// be async-signal-safe and must not capture instance state.
+using NonFatalSignalCallback = void (*)(int sig, siginfo_t* info, void* context);
 
 namespace NonFatalSignalHandler {
-/**
- * Add this handler to the list of functions which will be called if Envoy
- * receives a non-fatal signal. Returns true if the the handler was successfully
- * registered and false otherwise.
- */
-bool registerNonFatalSignalHandler(const NonFatalSignalHandlerInterface& handler);
+
+constexpr size_t MaxHandlers = 16;
 
 /**
- * Removes this handler from the list of functions which will be called if Envoy
- * receives a non-fatal signal.
+ * Add this callback to the list of functions called when Envoy receives a
+ * non-fatal signal. The callback must be async-signal-safe. Returns true if
+ * successfully registered, false if the handler limit has been reached.
  */
-void removeNonFatalSignalHandler(const NonFatalSignalHandlerInterface& handler);
+bool registerNonFatalSignalHandler(NonFatalSignalCallback cb);
 
 /**
- * Calls the signal handlers registered with registerNonFatalSignalHandler.
- * This is async-signal-safe and intended to be called from a signal handler.
+ * Remove this callback from the list if it exists.
+ */
+void removeNonFatalSignalHandler(NonFatalSignalCallback cb);
+
+/**
+ * Call all registered handlers. Async-signal-safe; intended to be called
+ * from a signal handler.
  */
 void callNonFatalSignalHandlers(int sig, siginfo_t* info, void* context);
 

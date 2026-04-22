@@ -7,83 +7,94 @@
 #include "gtest/gtest.h"
 
 namespace Envoy {
+namespace {
 
-// Concrete handler that counts invocations using atomics (async-signal-safe).
-class CountingSignalHandler : public NonFatalSignalHandlerInterface {
-public:
-  void onNonFatalSignal(int sig, siginfo_t* /*info*/, void* /*context*/) const override {
-    last_sig_.store(sig, std::memory_order_relaxed);
-    call_count_.fetch_add(1, std::memory_order_relaxed);
-  }
+// Static state for each named test callback. Atomics are async-signal-safe.
+std::atomic<int> g_count_a{0};
+std::atomic<int> g_last_sig_a{0};
+std::atomic<int> g_count_b{0};
+std::atomic<int> g_count_c{0};
 
-  mutable std::atomic<int> call_count_{0};
-  mutable std::atomic<int> last_sig_{0};
-};
+void handlerA(int sig, siginfo_t*, void*) {
+  g_last_sig_a.store(sig, std::memory_order_relaxed);
+  g_count_a.fetch_add(1, std::memory_order_relaxed);
+}
+
+void handlerB(int, siginfo_t*, void*) { g_count_b.fetch_add(1, std::memory_order_relaxed); }
+
+void handlerC(int, siginfo_t*, void*) { g_count_c.fetch_add(1, std::memory_order_relaxed); }
+
+void noopHandler(int, siginfo_t*, void*) {}
+
+} // namespace
 
 class NonFatalSignalHandlerTest : public ::testing::Test {
 protected:
+  void SetUp() override {
+    g_count_a = 0;
+    g_last_sig_a = 0;
+    g_count_b = 0;
+    g_count_c = 0;
+  }
+
   void TearDown() override {
-    for (auto& h : handlers_) {
-      NonFatalSignalHandler::removeNonFatalSignalHandler(*h);
+    for (auto cb : registered_) {
+      NonFatalSignalHandler::removeNonFatalSignalHandler(cb);
     }
-    handlers_.clear();
+    registered_.clear();
   }
 
-  CountingSignalHandler& addHandler() {
-    handlers_.push_back(std::make_unique<CountingSignalHandler>());
-    EXPECT_TRUE(NonFatalSignalHandler::registerNonFatalSignalHandler(*handlers_.back()));
-    return *handlers_.back();
+  void addHandler(NonFatalSignalCallback cb) {
+    EXPECT_TRUE(NonFatalSignalHandler::registerNonFatalSignalHandler(cb));
+    registered_.push_back(cb);
   }
 
-  std::vector<std::unique_ptr<CountingSignalHandler>> handlers_;
+  std::vector<NonFatalSignalCallback> registered_;
 };
 
 TEST_F(NonFatalSignalHandlerTest, RegisteredHandlerIsCalled) {
-  CountingSignalHandler& handler = addHandler();
+  addHandler(handlerA);
   NonFatalSignalHandler::callNonFatalSignalHandlers(SIGUSR2, nullptr, nullptr);
-  EXPECT_EQ(handler.call_count_, 1);
-  EXPECT_EQ(handler.last_sig_, SIGUSR2);
+  EXPECT_EQ(g_count_a, 1);
+  EXPECT_EQ(g_last_sig_a, SIGUSR2);
 }
 
 TEST_F(NonFatalSignalHandlerTest, RemovedHandlerIsNotCalled) {
-  CountingSignalHandler handler;
-  EXPECT_TRUE(NonFatalSignalHandler::registerNonFatalSignalHandler(handler));
-  NonFatalSignalHandler::removeNonFatalSignalHandler(handler);
+  NonFatalSignalHandler::registerNonFatalSignalHandler(handlerA);
+  NonFatalSignalHandler::removeNonFatalSignalHandler(handlerA);
   NonFatalSignalHandler::callNonFatalSignalHandlers(SIGUSR2, nullptr, nullptr);
-  EXPECT_EQ(handler.call_count_, 0);
+  EXPECT_EQ(g_count_a, 0);
 }
 
 TEST_F(NonFatalSignalHandlerTest, MultipleHandlersAllCalled) {
-  CountingSignalHandler& h1 = addHandler();
-  CountingSignalHandler& h2 = addHandler();
-  CountingSignalHandler& h3 = addHandler();
+  addHandler(handlerA);
+  addHandler(handlerB);
+  addHandler(handlerC);
 
   NonFatalSignalHandler::callNonFatalSignalHandlers(SIGUSR2, nullptr, nullptr);
-  EXPECT_EQ(h1.call_count_, 1);
-  EXPECT_EQ(h2.call_count_, 1);
-  EXPECT_EQ(h3.call_count_, 1);
+  EXPECT_EQ(g_count_a, 1);
+  EXPECT_EQ(g_count_b, 1);
+  EXPECT_EQ(g_count_c, 1);
 }
 
 TEST_F(NonFatalSignalHandlerTest, MaxHandlersExceededReturnsFalse) {
-  for (int i = 0; i < 16; i++) {
-    addHandler();
+  for (size_t i = 0; i < NonFatalSignalHandler::MaxHandlers; i++) {
+    addHandler(noopHandler);
   }
-  CountingSignalHandler overflow;
-  EXPECT_FALSE(NonFatalSignalHandler::registerNonFatalSignalHandler(overflow));
+  EXPECT_FALSE(NonFatalSignalHandler::registerNonFatalSignalHandler(handlerA));
 }
 
 TEST_F(NonFatalSignalHandlerTest, OnlyRemovedHandlerIsSkipped) {
-  CountingSignalHandler& h1 = addHandler();
-  CountingSignalHandler h2;
-  EXPECT_TRUE(NonFatalSignalHandler::registerNonFatalSignalHandler(h2));
-  CountingSignalHandler& h3 = addHandler();
+  addHandler(handlerA);
+  NonFatalSignalHandler::registerNonFatalSignalHandler(handlerB);
+  addHandler(handlerC);
 
-  NonFatalSignalHandler::removeNonFatalSignalHandler(h2);
+  NonFatalSignalHandler::removeNonFatalSignalHandler(handlerB);
   NonFatalSignalHandler::callNonFatalSignalHandlers(SIGUSR2, nullptr, nullptr);
 
-  EXPECT_EQ(h1.call_count_, 1);
-  EXPECT_EQ(h2.call_count_, 0);
-  EXPECT_EQ(h3.call_count_, 1);
+  EXPECT_EQ(g_count_a, 1);
+  EXPECT_EQ(g_count_b, 0);
+  EXPECT_EQ(g_count_c, 1);
 }
 
 TEST(NonFatalSignalActionTest, InstalledAfterConstructionRemovedAfterDestruction) {
@@ -96,17 +107,18 @@ TEST(NonFatalSignalActionTest, InstalledAfterConstructionRemovedAfterDestruction
 }
 
 TEST(NonFatalSignalActionTest, SIGUSR2DispatchesToRegisteredHandlers) {
-  CountingSignalHandler handler;
-  ASSERT_TRUE(NonFatalSignalHandler::registerNonFatalSignalHandler(handler));
+  g_count_a = 0;
+  g_last_sig_a = 0;
+  NonFatalSignalHandler::registerNonFatalSignalHandler(handlerA);
 
   {
     NonFatalSignalAction action;
     raise(SIGUSR2);
   }
 
-  NonFatalSignalHandler::removeNonFatalSignalHandler(handler);
-  EXPECT_GE(handler.call_count_.load(), 1);
-  EXPECT_EQ(handler.last_sig_.load(), SIGUSR2);
+  NonFatalSignalHandler::removeNonFatalSignalHandler(handlerA);
+  EXPECT_GE(g_count_a.load(), 1);
+  EXPECT_EQ(g_last_sig_a.load(), SIGUSR2);
 }
 
 } // namespace Envoy

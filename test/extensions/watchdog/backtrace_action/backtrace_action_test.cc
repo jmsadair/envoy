@@ -32,6 +32,7 @@ protected:
       : api_(Api::createApiForTest(stats_)), dispatcher_(api_->allocateDispatcher("test")),
         context_({*api_, *dispatcher_, *stats_.rootScope(), "test"}) {}
 
+  NonFatalSignalAction non_fatal_signal_action_;
   Stats::TestUtil::TestStore stats_;
   Api::ApiPtr api_;
   Event::DispatcherPtr dispatcher_;
@@ -59,7 +60,6 @@ TEST_F(BacktraceActionTest, SingleBacktraceLogged) {
   const bool prev_log_to_stderr = BackwardsTrace::logToStderr();
   BackwardsTrace::setLogToStderr(false);
 
-  NonFatalSignalAction non_fatal_signal_action;
   action_ = std::make_unique<BacktraceAction>(config, context_);
 
   Thread::ThreadId child_tid;
@@ -101,7 +101,6 @@ TEST_F(BacktraceActionTest, MultipleBacktracesLogged) {
   const bool prev_log_to_stderr = BackwardsTrace::logToStderr();
   BackwardsTrace::setLogToStderr(false);
 
-  NonFatalSignalAction non_fatal_signal_action;
   action_ = std::make_unique<BacktraceAction>(config, context_);
 
   Thread::ThreadId tid1, tid2;
@@ -148,6 +147,61 @@ TEST_F(BacktraceActionTest, MultipleBacktracesLogged) {
   dispatcher_->exit();
   thread1->join();
   thread2->join();
+}
+
+TEST_F(BacktraceActionTest, CooldownPreventsDuplicateBacktrace) {
+  envoy::extensions::watchdog::backtrace_action::v3::BacktraceActionConfig config;
+  config.mutable_cooldown_duration()->set_seconds(60);
+
+  const bool prev_log_to_stderr = BackwardsTrace::logToStderr();
+  BackwardsTrace::setLogToStderr(false);
+
+  action_ = std::make_unique<BacktraceAction>(config, context_);
+
+  Thread::ThreadId child_tid;
+  absl::Notification child_ready;
+  Thread::ThreadPtr thread =
+      api_->threadFactory().createThread([this, &child_tid, &child_ready]() -> void {
+        child_tid = api_->threadFactory().currentThreadId();
+        child_ready.Notify();
+        dispatcher_->run(Event::Dispatcher::RunType::RunUntilExit);
+      });
+  child_ready.WaitForNotification();
+
+  const auto now = api_->timeSource().monotonicTime();
+  const std::vector<std::pair<Thread::ThreadId, MonotonicTime>> tid_ltt_pairs = {{child_tid, now}};
+
+  std::atomic<int> count{0};
+  absl::Notification first_logged;
+  LogLevelSetter save_levels(spdlog::level::trace);
+  LogExpectation expectation(GetLogSink(), [&](Logger::Logger::Levels, const std::string& msg) {
+    if (msg.find("Envoy version:") != std::string::npos) {
+      if (count.fetch_add(1, std::memory_order_relaxed) == 0) {
+        first_logged.Notify();
+      }
+    }
+  });
+
+  dispatcher_->post([&]() {
+    action_->run(envoy::config::bootstrap::v3::Watchdog::WatchdogAction::MISS, tid_ltt_pairs, now);
+  });
+  EXPECT_TRUE(first_logged.WaitForNotificationWithTimeout(absl::Seconds(5)));
+
+  // Second run with the same TID and same timestamp: cooldown should suppress it.
+  absl::Notification second_run_done;
+  dispatcher_->post([&]() {
+    action_->run(envoy::config::bootstrap::v3::Watchdog::WatchdogAction::MISS, tid_ltt_pairs, now);
+    second_run_done.Notify();
+  });
+  EXPECT_TRUE(second_run_done.WaitForNotificationWithTimeout(absl::Seconds(5)));
+
+  // Allow any spurious timer to fire before asserting.
+  absl::SleepFor(absl::Milliseconds(200));
+  EXPECT_EQ(count.load(), 1);
+
+  BackwardsTrace::setLogToStderr(prev_log_to_stderr);
+  dispatcher_->exit();
+  thread->join();
 }
 
 } // namespace

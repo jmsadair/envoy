@@ -114,6 +114,7 @@ envoy_cc_library(
         ":process_wide_lib",
         ":stripped_main_base_lib",
         "//source/common/api:os_sys_calls_lib",
+        "//source/common/signal:non_fatal_sigaction_lib",
         "//source/common/common:compiler_requirements_lib",
         "//source/common/common:perf_annotation_lib",
         "//source/common/grpc:google_grpc_context_lib",

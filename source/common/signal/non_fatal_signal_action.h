@@ -9,7 +9,7 @@
 
 /**
  * Installs a signal handler for SIGUSR2 that dispatches to registered
- * NonFatalSignalHandlerInterface implementations.
+ * NonFatalSignalCallback functions.
  */
 namespace Envoy {
 class NonFatalSignalAction : NonCopyable {

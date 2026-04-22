@@ -21,7 +21,6 @@ envoy_cc_library(
         "//source/common/protobuf:utility_lib",
         "//source/common/thread:signal_thread_lib",
         "//source/common/signal:non_fatal_sigaction_lib",
-        "//source/common/signal:non_fatal_signal_handler_lib",
         "//source/server:backtrace_lib",
         "@abseil-cpp//absl/debugging:stacktrace",
         "@envoy_api//envoy/extensions/watchdog/backtrace_action/v3:pkg_cc_proto",

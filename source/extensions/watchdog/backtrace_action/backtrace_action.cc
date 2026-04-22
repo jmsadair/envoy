@@ -1,6 +1,7 @@
 #include "source/extensions/watchdog/backtrace_action/backtrace_action.h"
 
 #include <sys/syscall.h>
+#include <unistd.h>
 
 #include "envoy/thread/thread.h"
 
@@ -16,16 +17,22 @@ namespace Extensions {
 namespace Watchdog {
 namespace BacktraceAction {
 
+std::array<BacktraceAction::SignalSlot, BacktraceAction::MaxSlots> BacktraceAction::signal_slots_;
+bool BacktraceAction::signal_handler_registered_ = false;
+
 BacktraceAction::BacktraceAction(
     envoy::extensions::watchdog::backtrace_action::v3::BacktraceActionConfig& config,
     Server::Configuration::GuardDogActionFactoryContext& context)
     : cooldown_duration_(
-          std::chrono::seconds(PROTOBUF_GET_SECONDS_OR_DEFAULT(config, cooldown_duration, 10))),
-      handler_registered_(NonFatalSignalHandler::registerNonFatalSignalHandler(*this)) {
+          std::chrono::seconds(PROTOBUF_GET_SECONDS_OR_DEFAULT(config, cooldown_duration, 10))) {
+  if (!signal_handler_registered_) {
+    signal_handler_registered_ =
+        NonFatalSignalHandler::registerNonFatalSignalHandler(onNonFatalSignal);
+  }
 
   for (int i = 0; i < MaxSlots; ++i) {
-    slots_[i].timer = context.dispatcher_.createTimer([this, i]() {
-      auto& slot = slots_[i];
+    timers_[i] = context.dispatcher_.createTimer([i]() {
+      auto& slot = signal_slots_[i];
       if (slot.ready.load(std::memory_order_acquire)) {
         BackwardsTrace tracer;
         tracer.loadRaw(slot.trace.frames, slot.trace.depth);
@@ -37,14 +44,18 @@ BacktraceAction::BacktraceAction(
 }
 
 BacktraceAction::~BacktraceAction() {
-  if (handler_registered_) {
-    NonFatalSignalHandler::removeNonFatalSignalHandler(*this);
+  if (signal_handler_registered_) {
+    NonFatalSignalHandler::removeNonFatalSignalHandler(onNonFatalSignal);
+    signal_handler_registered_ = false;
   }
 }
 
-void BacktraceAction::onNonFatalSignal(int /*sig*/, siginfo_t* /*info*/, void* context) const {
+void BacktraceAction::onNonFatalSignal(int /*sig*/, siginfo_t* info, void* context) {
+  if (info == nullptr || info->si_pid != getpid()) {
+    return;
+  }
   const pid_t mytid = static_cast<pid_t>(syscall(SYS_gettid));
-  for (auto& slot : slots_) {
+  for (auto& slot : signal_slots_) {
     if (slot.tid.load(std::memory_order_acquire) == mytid) {
       auto& t = slot.trace;
       if (context != nullptr) {
@@ -62,7 +73,7 @@ void BacktraceAction::run(
     envoy::config::bootstrap::v3::Watchdog::WatchdogAction::WatchdogEvent /*event*/,
     const std::vector<std::pair<Thread::ThreadId, MonotonicTime>>& thread_last_checkin_pairs,
     MonotonicTime now) {
-  if (!handler_registered_) {
+  if (!signal_handler_registered_) {
     ENVOY_LOG_MISC(warn, "Backtrace Action: signal handler not registered.");
     return;
   }
@@ -71,7 +82,7 @@ void BacktraceAction::run(
     return;
   }
   if (thread_last_checkin_pairs.empty()) {
-    ENVOY_LOG_MISC(warn, "Backtrace Action: No tids were provided.");
+    ENVOY_LOG_MISC(warn, "Backtrace Action: no tids were provided.");
     return;
   }
 
@@ -87,7 +98,7 @@ void BacktraceAction::run(
 
     // Skip if already in-flight for this TID.
     bool pending = false;
-    for (const auto& slot : slots_) {
+    for (const auto& slot : signal_slots_) {
       if (slot.tid.load(std::memory_order_acquire) == raw_tid) {
         pending = true;
         break;
@@ -98,13 +109,13 @@ void BacktraceAction::run(
     }
 
     // Claim a free slot.
-    for (auto& slot : slots_) {
+    for (int i = 0; i < MaxSlots; ++i) {
       pid_t expected = 0;
-      if (slot.tid.compare_exchange_strong(expected, raw_tid, std::memory_order_release,
-                                           std::memory_order_relaxed)) {
-        slot.ready.store(false, std::memory_order_relaxed);
+      if (signal_slots_[i].tid.compare_exchange_strong(expected, raw_tid, std::memory_order_release,
+                                                       std::memory_order_relaxed)) {
+        signal_slots_[i].ready.store(false, std::memory_order_relaxed);
         Thread::signalThread(tid, SIGUSR2);
-        slot.timer->enableTimer(std::chrono::milliseconds(100));
+        timers_[i]->enableTimer(std::chrono::milliseconds(100));
         tid_to_last_backtrace_[tid] = now;
         break;
       }
