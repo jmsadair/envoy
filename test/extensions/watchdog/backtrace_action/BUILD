@@ -16,6 +16,7 @@ envoy_extension_cc_test(
     srcs = ["backtrace_action_test.cc"],
     extension_names = ["envoy.watchdog.backtrace_action"],
     rbe_pool = "6gig",
+    tags = ["skip_on_windows"],
     deps = [
         "//envoy/common:time_interface",
         "//envoy/server:guarddog_config_interface",
@@ -40,8 +41,8 @@ envoy_extension_cc_test(
     deps = [
         "//envoy/registry",
         "//envoy/server:guarddog_config_interface",
-        "//source/extensions/watchdog/backtrace_action:config",
         "//source/extensions/watchdog/backtrace_action:backtrace_action_lib",
+        "//source/extensions/watchdog/backtrace_action:config",
         "//test/common/stats:stat_test_utility_lib",
         "//test/mocks/event:event_mocks",
         "//test/test_common:utility_lib",

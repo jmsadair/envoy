@@ -40,17 +40,39 @@ protected:
   std::unique_ptr<Server::Configuration::GuardDogAction> action_;
 };
 
-TEST_F(BacktraceActionTest, NoBacktracesLogged) {
+class BacktraceActionNoSignalTest : public testing::Test {
+protected:
+  BacktraceActionNoSignalTest()
+      : api_(Api::createApiForTest(stats_)), dispatcher_(api_->allocateDispatcher("test")),
+        context_({*api_, *dispatcher_, *stats_.rootScope(), "test"}) {}
+
+  Stats::TestUtil::TestStore stats_;
+  Api::ApiPtr api_;
+  Event::DispatcherPtr dispatcher_;
+  Server::Configuration::GuardDogActionFactoryContext context_;
+  std::unique_ptr<Server::Configuration::GuardDogAction> action_;
+};
+
+TEST_F(BacktraceActionTest, WarnOnEmptyThreadList) {
+  envoy::extensions::watchdog::backtrace_action::v3::BacktraceActionConfig config;
+  action_ = std::make_unique<BacktraceAction>(config, context_);
+
+  const auto now = api_->timeSource().monotonicTime();
+  EXPECT_LOG_CONTAINS(
+      "warn", "no tids were provided",
+      action_->run(envoy::config::bootstrap::v3::Watchdog::WatchdogAction::MISS, {}, now));
+}
+
+TEST_F(BacktraceActionNoSignalTest, WarnWhenSignalNotInstalled) {
   envoy::extensions::watchdog::backtrace_action::v3::BacktraceActionConfig config;
   action_ = std::make_unique<BacktraceAction>(config, context_);
 
   const auto now = api_->timeSource().monotonicTime();
   const std::vector<std::pair<Thread::ThreadId, MonotonicTime>> tid_ltt_pairs = {
       {Thread::ThreadId(10), now}};
-
-  EXPECT_LOG_NOT_CONTAINS("critical", "Envoy version:",
-                          action_->run(envoy::config::bootstrap::v3::Watchdog::WatchdogAction::MISS,
-                                       tid_ltt_pairs, now));
+  EXPECT_LOG_CONTAINS("warn", "signal handler not installed",
+                      action_->run(envoy::config::bootstrap::v3::Watchdog::WatchdogAction::MISS,
+                                   tid_ltt_pairs, now));
 }
 
 TEST_F(BacktraceActionTest, SingleBacktraceLogged) {
@@ -194,6 +216,55 @@ TEST_F(BacktraceActionTest, CooldownPreventsDuplicateBacktrace) {
     second_run_done.Notify();
   });
   EXPECT_TRUE(second_run_done.WaitForNotificationWithTimeout(absl::Seconds(5)));
+
+  // Allow any spurious timer to fire before asserting.
+  absl::SleepFor(absl::Milliseconds(200));
+  EXPECT_EQ(count.load(), 1);
+
+  BackwardsTrace::setLogToStderr(prev_log_to_stderr);
+  dispatcher_->exit();
+  thread->join();
+}
+
+TEST_F(BacktraceActionTest, InFlightSkipPreventsDuplicateBacktrace) {
+  envoy::extensions::watchdog::backtrace_action::v3::BacktraceActionConfig config;
+  config.mutable_cooldown_duration()->set_seconds(0);
+
+  const bool prev_log_to_stderr = BackwardsTrace::logToStderr();
+  BackwardsTrace::setLogToStderr(false);
+
+  action_ = std::make_unique<BacktraceAction>(config, context_);
+
+  Thread::ThreadId child_tid;
+  absl::Notification child_ready;
+  Thread::ThreadPtr thread =
+      api_->threadFactory().createThread([this, &child_tid, &child_ready]() -> void {
+        child_tid = api_->threadFactory().currentThreadId();
+        child_ready.Notify();
+        dispatcher_->run(Event::Dispatcher::RunType::RunUntilExit);
+      });
+  child_ready.WaitForNotification();
+
+  const auto now = api_->timeSource().monotonicTime();
+  const std::vector<std::pair<Thread::ThreadId, MonotonicTime>> tid_ltt_pairs = {{child_tid, now}};
+
+  std::atomic<int> count{0};
+  absl::Notification first_logged;
+  LogLevelSetter save_levels(spdlog::level::trace);
+  LogExpectation expectation(GetLogSink(), [&](Logger::Logger::Levels, const std::string& msg) {
+    if (msg.find("Envoy version:") != std::string::npos) {
+      if (count.fetch_add(1, std::memory_order_relaxed) == 0) {
+        first_logged.Notify();
+      }
+    }
+  });
+
+  dispatcher_->post([&]() {
+    action_->run(envoy::config::bootstrap::v3::Watchdog::WatchdogAction::MISS, tid_ltt_pairs, now);
+    action_->run(envoy::config::bootstrap::v3::Watchdog::WatchdogAction::MISS, tid_ltt_pairs, now);
+  });
+
+  EXPECT_TRUE(first_logged.WaitForNotificationWithTimeout(absl::Seconds(5)));
 
   // Allow any spurious timer to fire before asserting.
   absl::SleepFor(absl::Milliseconds(200));

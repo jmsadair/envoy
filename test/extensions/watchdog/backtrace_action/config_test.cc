@@ -49,9 +49,7 @@ TEST(BacktraceActionFactoryTest, CanCreateAction) {
   Event::MockDispatcher dispatcher;
   EXPECT_CALL(dispatcher, createTimer_(testing::_))
       .Times(16)
-      .WillRepeatedly(Invoke([](Event::TimerCb) {
-        return new NiceMock<Event::MockTimer>();
-      }));
+      .WillRepeatedly(Invoke([](Event::TimerCb) { return new NiceMock<Event::MockTimer>(); }));
   Api::ApiPtr api = Api::createApiForTest(stats);
   Server::Configuration::GuardDogActionFactoryContext context{*api, dispatcher, *stats.rootScope(),
                                                               "test"};

@@ -1,5 +1,6 @@
 #include "source/common/signal/non_fatal_signal_action.h"
 
+#include <atomic>
 #include <csignal>
 
 #include "source/common/common/assert.h"
@@ -13,7 +14,7 @@ void NonFatalSignalAction::sigHandler(int sig, siginfo_t* info, void* context) {
   NonFatalSignalHandler::callNonFatalSignalHandlers(sig, info, context);
 }
 
-bool NonFatalSignalAction::isInstalled() { return installed_; }
+bool NonFatalSignalAction::isInstalled() { return installed_.load(std::memory_order_acquire); }
 
 void NonFatalSignalAction::installSigHandler() {
   struct sigaction saction;
@@ -22,12 +23,12 @@ void NonFatalSignalAction::installSigHandler() {
   saction.sa_flags = SA_SIGINFO;
   saction.sa_sigaction = sigHandler;
   RELEASE_ASSERT(sigaction(SIGUSR2, &saction, &previous_handler_) == 0, "");
-  installed_ = true;
+  installed_.store(true, std::memory_order_release);
 }
 
 void NonFatalSignalAction::removeSigHandler() {
   RELEASE_ASSERT(sigaction(SIGUSR2, &previous_handler_, nullptr) == 0, "");
-  installed_ = false;
+  installed_.store(false, std::memory_order_release);
 }
 
 } // namespace Envoy

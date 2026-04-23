@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <functional>
 #include <iostream>
 #include <ostream>
@@ -131,7 +132,7 @@ public:
 
   void loadRaw(void* const* frames, int depth) {
     stack_depth_ = depth;
-    std::memcpy(stack_trace_, frames, depth * sizeof(void*));
+    std::copy(frames, frames + depth, stack_trace_);
   }
 
   void printTrace(std::ostream& os) {

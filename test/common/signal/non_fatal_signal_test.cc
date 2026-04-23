@@ -9,7 +9,6 @@
 namespace Envoy {
 namespace {
 
-// Static state for each named test callback. Atomics are async-signal-safe.
 std::atomic<int> g_count_a{0};
 std::atomic<int> g_last_sig_a{0};
 std::atomic<int> g_count_b{0};

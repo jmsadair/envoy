@@ -34,19 +34,14 @@ BacktraceAction::BacktraceAction(
     timers_[i] = context.dispatcher_.createTimer([i]() {
       auto& slot = signal_slots_[i];
       if (slot.ready.load(std::memory_order_acquire)) {
+        ENVOY_LOG_MISC(critical, "Backtrace Action: backtrace for thread {}:",
+                       slot.tid.load(std::memory_order_relaxed));
         BackwardsTrace tracer;
         tracer.loadRaw(slot.trace.frames, slot.trace.depth);
         tracer.logTrace();
       }
       slot.tid.store(0, std::memory_order_release);
     });
-  }
-}
-
-BacktraceAction::~BacktraceAction() {
-  if (signal_handler_registered_) {
-    NonFatalSignalHandler::removeNonFatalSignalHandler(onNonFatalSignal);
-    signal_handler_registered_ = false;
   }
 }
 
@@ -114,7 +109,11 @@ void BacktraceAction::run(
       if (signal_slots_[i].tid.compare_exchange_strong(expected, raw_tid, std::memory_order_release,
                                                        std::memory_order_relaxed)) {
         signal_slots_[i].ready.store(false, std::memory_order_relaxed);
-        Thread::signalThread(tid, SIGUSR2);
+        if (!Thread::signalThread(tid, SIGUSR2)) {
+          ENVOY_LOG_MISC(warn, "Backtrace Action: failed to signal thread {}.", raw_tid);
+          signal_slots_[i].tid.store(0, std::memory_order_relaxed);
+          break;
+        }
         timers_[i]->enableTimer(std::chrono::milliseconds(100));
         tid_to_last_backtrace_[tid] = now;
         break;

@@ -24,7 +24,6 @@ class BacktraceAction : public Server::Configuration::GuardDogAction {
 public:
   BacktraceAction(envoy::extensions::watchdog::backtrace_action::v3::BacktraceActionConfig& config,
                   Server::Configuration::GuardDogActionFactoryContext& context);
-  ~BacktraceAction() override;
 
   void run(envoy::config::bootstrap::v3::Watchdog::WatchdogAction::WatchdogEvent event,
            const std::vector<std::pair<Thread::ThreadId, MonotonicTime>>& thread_last_checkin_pairs,
