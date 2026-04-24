@@ -26,7 +26,6 @@ TEST(BacktraceActionFactoryTest, CanCreateAction) {
           "envoy.watchdog.backtrace_action");
   ASSERT_NE(factory, nullptr);
 
-  // Create config and mock context
   envoy::config::bootstrap::v3::Watchdog::WatchdogAction config;
   TestUtility::loadFromJson(
       R"EOF(

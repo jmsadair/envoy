@@ -1,4 +1,5 @@
 #include <atomic>
+#include <csignal>
 #include <memory>
 #include <vector>
 
@@ -10,6 +11,7 @@
 #include "envoy/thread/thread.h"
 
 #include "source/common/signal/non_fatal_signal_action.h"
+#include "source/common/signal/non_fatal_signal_handler.h"
 #include "source/extensions/watchdog/backtrace_action/backtrace_action.h"
 #include "source/server/backtrace.h"
 
@@ -273,6 +275,28 @@ TEST_F(BacktraceActionTest, InFlightSkipPreventsDuplicateBacktrace) {
   BackwardsTrace::setLogToStderr(prev_log_to_stderr);
   dispatcher_->exit();
   thread->join();
+}
+
+TEST_F(BacktraceActionTest, OnNonFatalSignalNullInfoIgnored) {
+  envoy::extensions::watchdog::backtrace_action::v3::BacktraceActionConfig config;
+  action_ = std::make_unique<BacktraceAction>(config, context_);
+  NonFatalSignalHandler::callNonFatalSignalHandlers(SIGUSR2, nullptr, nullptr);
+}
+
+TEST_F(BacktraceActionTest, OnNonFatalSignalWrongPidIgnored) {
+  envoy::extensions::watchdog::backtrace_action::v3::BacktraceActionConfig config;
+  action_ = std::make_unique<BacktraceAction>(config, context_);
+  siginfo_t info{};
+  info.si_pid = 1; // PID 1 (init) is never our PID.
+  NonFatalSignalHandler::callNonFatalSignalHandlers(SIGUSR2, &info, nullptr);
+}
+
+TEST_F(BacktraceActionTest, OnNonFatalSignalNoMatchingSlot) {
+  envoy::extensions::watchdog::backtrace_action::v3::BacktraceActionConfig config;
+  action_ = std::make_unique<BacktraceAction>(config, context_);
+  siginfo_t info{};
+  info.si_pid = getpid();
+  NonFatalSignalHandler::callNonFatalSignalHandlers(SIGUSR2, &info, nullptr);
 }
 
 } // namespace

@@ -82,7 +82,7 @@ void BacktraceAction::run(
   }
 
   for (const auto& [tid, ltt] : thread_last_checkin_pairs) {
-    // Apply cooldown per thread.
+    // Apply cooldown duration per thread.
     if (auto it = tid_to_last_backtrace_.find(tid); it != tid_to_last_backtrace_.end()) {
       if (std::chrono::duration_cast<std::chrono::seconds>(now - it->second) < cooldown_duration_) {
         continue;

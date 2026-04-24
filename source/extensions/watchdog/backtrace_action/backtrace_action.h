@@ -56,7 +56,7 @@ private:
   std::array<Event::TimerPtr, MaxSlots> timers_;
 
   // Contains the backtrace state for up to MaxSlots threads at a time.
-  // This must be static so that it is not destroyed while the signal handler is using it.
+  // Must be static in case instance is destroyed while signal handler is using it.
   static std::array<SignalSlot, MaxSlots> signal_slots_;
 
   // Maps TID to last time a backtrace was taken for it.

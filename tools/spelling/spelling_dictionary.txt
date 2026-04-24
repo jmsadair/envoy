@@ -486,6 +486,7 @@ SIGINT
 SIGPIPE
 SIGSEGV
 SIGTERM
+SIGUSR2
 SIMD
 SIO
 SSE
@@ -734,6 +735,7 @@ conns
 const
 constexpr
 constructible
+cooldown
 copyable
 coroutine
 coroutines
