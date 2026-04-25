@@ -1,10 +1,10 @@
 #include "source/extensions/watchdog/backtrace_action/backtrace_action.h"
 
-#include <sys/syscall.h>
 #include <unistd.h>
 
 #include "envoy/thread/thread.h"
 
+#include "source/common/common/posix/thread_impl.h"
 #include "source/common/protobuf/utility.h"
 #include "source/common/signal/non_fatal_signal_action.h"
 #include "source/common/signal/non_fatal_signal_handler.h"
@@ -50,7 +50,10 @@ void BacktraceAction::onNonFatalSignal(int /*sig*/, siginfo_t* info, void* conte
   if (info == nullptr || info->si_pid != getpid()) {
     return;
   }
-  const pid_t mytid = static_cast<pid_t>(syscall(SYS_gettid));
+  // Async-signal-safe: reads a thread-local cached on each watched thread when
+  // it registered with the watchdog (see worker_impl.cc / server.cc), so this
+  // is just a TLS load by the time we reach the signal handler.
+  const int64_t mytid = Thread::getCurrentThreadId();
   for (auto& slot : signal_slots_) {
     if (slot.tid.load(std::memory_order_acquire) == mytid) {
       auto& t = slot.trace;
@@ -89,7 +92,7 @@ void BacktraceAction::run(
       }
     }
 
-    const pid_t raw_tid = static_cast<pid_t>(tid.getId());
+    const int64_t raw_tid = tid.getId();
 
     // Skip if already in-flight for this TID.
     bool pending = false;
@@ -105,7 +108,7 @@ void BacktraceAction::run(
 
     // Claim a free slot.
     for (int i = 0; i < MaxSlots; ++i) {
-      pid_t expected = 0;
+      int64_t expected = 0;
       if (signal_slots_[i].tid.compare_exchange_strong(expected, raw_tid, std::memory_order_release,
                                                        std::memory_order_relaxed)) {
         signal_slots_[i].ready.store(false, std::memory_order_relaxed);

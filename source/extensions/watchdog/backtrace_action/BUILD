@@ -18,6 +18,7 @@ envoy_cc_library(
         "//envoy/event:timer_interface",
         "//envoy/server:guarddog_config_interface",
         "//envoy/thread:thread_interface",
+        "//source/common/common:thread_impl_lib_posix",
         "//source/common/protobuf:utility_lib",
         "//source/common/signal:non_fatal_sigaction_lib",
         "//source/common/thread:signal_thread_lib",

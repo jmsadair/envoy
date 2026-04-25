@@ -32,13 +32,6 @@ int64_t getCurrentThreadIdBase() {
 #endif
 }
 
-int64_t getCurrentThreadId() {
-  // Use the static value rather than the static pointer to suppress ASAN memory leak
-  // errors.
-  static thread_local const int64_t tid = getCurrentThreadIdBase();
-  return tid;
-}
-
 void setThreadPriority(const int64_t tid, const int priority) {
 #if defined(__linux__)
   const int rc = setpriority(PRIO_PROCESS, tid, priority);
@@ -63,6 +56,13 @@ void setThreadPriority(const int64_t tid, const int priority) {
 }
 
 } // namespace
+
+int64_t getCurrentThreadId() {
+  // Use the static value rather than the static pointer to suppress ASAN memory leak
+  // errors.
+  static thread_local const int64_t tid = getCurrentThreadIdBase();
+  return tid;
+}
 
 // See https://www.man7.org/linux/man-pages/man3/pthread_setname_np.3.html.
 // The maximum thread name is 16 bytes including the terminating nul byte,

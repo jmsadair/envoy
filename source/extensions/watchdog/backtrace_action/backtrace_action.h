@@ -39,7 +39,7 @@ private:
   };
 
   struct SignalSlot {
-    std::atomic<pid_t> tid{0}; // 0 means the slot is free.
+    std::atomic<int64_t> tid{0}; // 0 means the slot is free.
     std::atomic<bool> ready{false};
     RawTrace trace{};
   };
