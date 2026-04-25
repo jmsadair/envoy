@@ -7,11 +7,11 @@
 
 #include "source/common/common/non_copyable.h"
 
+namespace Envoy {
 /**
  * Installs a signal handler for SIGUSR2 that dispatches to registered
  * NonFatalSignalCallback functions.
  */
-namespace Envoy {
 class NonFatalSignalAction : NonCopyable {
 public:
   NonFatalSignalAction() { installSigHandler(); }

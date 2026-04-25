@@ -39,11 +39,12 @@ private:
   };
 
   struct SignalSlot {
-    std::atomic<pid_t> tid{0};
+    std::atomic<pid_t> tid{0}; // 0 means the slot is free.
     std::atomic<bool> ready{false};
     RawTrace trace{};
   };
 
+  // Called in signal handler context; must be async-signal-safe.
   static void onNonFatalSignal(int sig, siginfo_t* info, void* context);
 
   // Minimum amount of time between backtraces for a given thread.
@@ -59,7 +60,6 @@ private:
   // Must be static in case instance is destroyed while signal handler is using it.
   static std::array<SignalSlot, MaxSlots> signal_slots_;
 
-  // Maps TID to last time a backtrace was taken for it.
   absl::flat_hash_map<Thread::ThreadId, MonotonicTime> tid_to_last_backtrace_;
 };
 

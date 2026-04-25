@@ -46,6 +46,7 @@ BacktraceAction::BacktraceAction(
 }
 
 void BacktraceAction::onNonFatalSignal(int /*sig*/, siginfo_t* info, void* context) {
+  // Only handle signals sent by our own process.
   if (info == nullptr || info->si_pid != getpid()) {
     return;
   }
@@ -82,7 +83,6 @@ void BacktraceAction::run(
   }
 
   for (const auto& [tid, ltt] : thread_last_checkin_pairs) {
-    // Apply cooldown duration per thread.
     if (auto it = tid_to_last_backtrace_.find(tid); it != tid_to_last_backtrace_.end()) {
       if (std::chrono::duration_cast<std::chrono::seconds>(now - it->second) < cooldown_duration_) {
         continue;

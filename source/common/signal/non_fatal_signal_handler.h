@@ -4,8 +4,7 @@
 
 namespace Envoy {
 
-// Function pointer type for non-fatal signal handlers. Implementations must
-// be async-signal-safe and must not capture instance state.
+// Function pointer type for non-fatal signal handlers. Must be async-signal-safe.
 using NonFatalSignalCallback = void (*)(int sig, siginfo_t* info, void* context);
 
 namespace NonFatalSignalHandler {
